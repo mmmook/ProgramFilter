@@ -1,5 +1,8 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Windows;
 
@@ -7,42 +10,47 @@ namespace ProgramFilter
 {
     class Program
     {
+        private static readonly string EVENT_HANDLE_NAME = "40AA5C2D-F707-4E45-BECE-7010E9AB82A2";
+        private static readonly int TIMER_INTERVAL = 204;
+        private static readonly int WAIT_INTERVAL = 102;
+        private static Timer _timer;
+
+        private static readonly string CONFIG_FILE_PATH = "killlist.txt";
+        private static readonly List<string> _processesToKill = new List<string> { "wegame", "client", "launcher", "dnf" };
+
+
         static void Main(string[] args)
         {
-            // new InitStart();
-
-            // 创建具有唯一标识符的IPC等待句柄。 Create a IPC wait handle with a unique identifier.
-            bool createdNew;
-            var waitHandle = new EventWaitHandle(false, EventResetMode.AutoReset, "40AA5C2D-F707-4E45-BECE-7010E9AB82A2", out createdNew);
-            var signaled = false;
-
-            // 如果句柄已经存在，则通知其他进程退出自身。If the handle was already there, inform the other process to exit itself.
-            // 之后我们也会死。 Afterwards we'll also die.
-            if (!createdNew)
+            try
             {
-                Log("通知其他进程停止。Inform other process to stop.");
-                waitHandle.Set();
-                Log("告密者离开了。Informer exited.");
+                LoadKillList();
 
-                return;
+                using (var waitHandle = new EventWaitHandle(false, EventResetMode.AutoReset, EVENT_HANDLE_NAME, out bool createdNew))
+                {
+                    if (!createdNew)
+                    {
+                        Log("通知其他进程停止。");
+                        waitHandle.Set();
+                        Log("告密者离开了。");
+                        return;
+                    }
+
+                    _timer = new Timer(OnTimerElapsed, null, TimeSpan.Zero, TimeSpan.FromMilliseconds(TIMER_INTERVAL));
+
+                    bool signaled;
+                    do
+                    {
+                        signaled = waitHandle.WaitOne(TimeSpan.FromMilliseconds(WAIT_INTERVAL));
+                        Run();
+                    } while (!signaled);
+
+                    Log("收到了自杀的信号。");
+                }
             }
-
-            // 启动另一个线程，每10秒执行一次。 Start a another thread that does something every 10 seconds.
-            var timer = new Timer(OnTimerElapsed, null, TimeSpan.Zero, TimeSpan.FromMilliseconds(204));
-
-            // 等一下，如果有人告诉我们去死，或者每五秒钟做一件别的事情。 Wait if someone tells us to die or do every five seconds something else.
-            do
+            finally
             {
-                signaled = waitHandle.WaitOne(TimeSpan.FromMilliseconds(102));
-                // 待办事项：如果需要，还可以做其他事情。 ToDo: Something else if desired.
-                //Log("如果需要，还可以做其他事情。 ToDo: Something else if desired.");
-                Run();
-            } while (!signaled);
-
-            // 上面的带有拦截器的循环也可以由一个无止境的服务员代替 The above loop with an interceptor could also be replaced by an endless waiter
-            //waitHandle.WaitOne();
-
-            Log("收到了自杀的信号。 Got signal to kill myself.");
+                _timer?.Dispose();
+            }
         }
 
         private static void Log(string message)
@@ -55,52 +63,64 @@ namespace ProgramFilter
             // Log("计时器已过。Timer elapsed.");
         }
 
+        private static void LoadKillList()
+        {
+            try
+            {
+                if (File.Exists(CONFIG_FILE_PATH))
+                {
+                    var customProcesses = File.ReadAllLines(CONFIG_FILE_PATH)
+                        .Where(line => !string.IsNullOrWhiteSpace(line))
+                        .Select(line => line.Trim().ToLower());
+                    _processesToKill.AddRange(customProcesses);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"读取配置文件失败: {ex.Message}");
+            }
+        }
+
         static void Run()
         {
-            Process[] ps = Process.GetProcessesByName("Daemon");
+            CheckAndStartProcess("Daemon", @"Daemon.exe");
+            foreach (var processName in _processesToKill)
+            {
+                KillProcess(processName);
+            }
+        }
+
+        private static void CheckAndStartProcess(string processName, string processPath)
+        {
+            Process[] ps = Process.GetProcessesByName(processName);
             if (ps.Length <= 0)
             {
                 try
                 {
-                    StartProcess(@"Daemon.exe");
+                    StartProcess(processPath);
                 }
-                catch { }
-            }
-            ps = Process.GetProcessesByName("wegame");
-            if (ps.Length > 0)
-            {
-                foreach (var p in ps)
+                catch (Exception e)
                 {
-                    p.Kill();
+                    Trace.WriteLine(e.Message);
                 }
-                MessageBox.Show("系统文件已损坏！代码：0xc0000000250", ps[0].ProcessName + "警告0xc0000000250");
             }
-            ps = Process.GetProcessesByName("client");
-            if (ps.Length > 0)
+        }
+
+        private static void KillProcess(string processName)
+        {
+            foreach (var process in Process.GetProcessesByName(processName))
             {
-                foreach (var p in ps)
+                try
                 {
-                    p.Kill();
+                    using (process)
+                    {
+                        process.Kill();
+                    }
                 }
-                MessageBox.Show("系统文件已损坏！代码：0xc0000000250", ps[0].ProcessName + "警告0xc0000000250");
-            }
-            ps = Process.GetProcessesByName("launcher");
-            if (ps.Length > 0)
-            {
-                foreach (var p in ps)
+                catch (Exception e)
                 {
-                    p.Kill();
+                    Trace.TraceError($"结束进程 {processName} 失败: {e}");
                 }
-                MessageBox.Show("系统文件已损坏！代码：0xc0000000250", ps[0].ProcessName + "警告0xc0000000250");
-            }
-            ps = Process.GetProcessesByName("dnf");
-            if (ps.Length > 0)
-            {
-                foreach (var p in ps)
-                {
-                    p.Kill();
-                }
-                MessageBox.Show("系统文件已损坏！代码：0xc0000000250", ps[0].ProcessName + "警告0xc0000000250");
             }
         }
 
@@ -109,17 +129,20 @@ namespace ProgramFilter
         /// </summary>
         private static void StartProcess(string processName)
         {
-            Process myProcess = new Process();
-            try
+            using (Process myProcess = new Process())
             {
-                myProcess.StartInfo.UseShellExecute = false;
-                myProcess.StartInfo.FileName = processName;
-                myProcess.StartInfo.CreateNoWindow = true;
-                myProcess.Start();
-            }
-            catch (Exception e)
-            {
-                Trace.WriteLine(e.Message);
+                try
+                {
+                    myProcess.StartInfo.UseShellExecute = false;
+                    myProcess.StartInfo.FileName = processName;
+                    myProcess.StartInfo.CreateNoWindow = true;
+                    myProcess.Start();
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceError($"启动进程 {processName} 失败: {e}");
+                    throw;
+                }
             }
         }
     }
